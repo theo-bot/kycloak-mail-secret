@@ -21,12 +21,12 @@ var (
 	clientset, _ = kubernetes.NewForConfig(config)
 )
 
-
 type kcConfig struct {
-	url      string
-	realm    string
-	username string
-	password string
+	url       string
+	realm     string
+	username  string
+	password  string
+	namespace string
 }
 
 type kcMail struct {
@@ -34,7 +34,6 @@ type kcMail struct {
 	password string
 	host     string
 }
-
 
 // Get an environment variable or return a default value
 func GetEnvironmentVar(envVar string, defaultValue string) string {
@@ -67,12 +66,12 @@ func SetKeycloakSmtp(config *kcConfig, kcEmail *kcMail) error {
 	// Extract the SMPT configuration from the realm configuration
 	kcSmtp := *kcRealm.SMTPServer
 	log.Info(kcSmtp)
-	
+
 	// Update the smtp parameters
 	kcSmtp["host"] = kcEmail.host
 	kcSmtp["password"] = kcEmail.password
 	kcSmtp["user"] = kcEmail.username
-	
+
 	// Update te realm configuration with the new smtp settings
 	err = client.UpdateRealm(ctx, token.AccessToken, *kcRealm)
 	if err != nil {
@@ -91,6 +90,7 @@ func watchSecrets(config *kcConfig) error {
 		log.Error("Failed to get current namespace. ", err.Error())
 		return err
 	}
+	config.namespace = namespace.GetName()
 
 	watchFunc := func(options metav1.ListOptions) (watch.Interface, error) {
 		timeOut := int64(60)
@@ -120,17 +120,11 @@ func modSecret(config *kcConfig, name string) error {
 	log.Info("Secret changed: ", name)
 	secretName := GetEnvironmentVar("KEYCLOAK_SMTP_SECRET", "keycloak-smtp-secret")
 	if name == secretName {
-		// Get the current namespace
-		namespace, err := clientset.CoreV1().Namespaces().Get(context.TODO(), "default", metav1.GetOptions{})
-		if err != nil {
-			log.Error("Failed to get current namespace. ", err.Error())
-			return err
-		}
 
 		// Get the secret from the current namespace
-		secret, err := clientset.CoreV1().Secrets(namespace.GetName()).Get(context.TODO(), secretName, metav1.GetOptions{})
+		secret, err := clientset.CoreV1().Secrets(config.namespace).Get(context.TODO(), secretName, metav1.GetOptions{})
 		if err != nil {
-			log.Error("Failed to get current namespace. ", err.Error())
+			log.Error("Failed to get secret. ", err.Error())
 			return err
 		}
 
@@ -138,7 +132,7 @@ func modSecret(config *kcConfig, name string) error {
 		smtpData.username = string(secret.Data["username"])
 		smtpData.password = string(secret.Data["password"])
 		smtpData.host = string(secret.Data["hostname"])
-		
+
 		// Set the Smtp password in the keycloak pod
 		SetKeycloakSmtp(config, smtpData)
 	}
@@ -146,13 +140,13 @@ func modSecret(config *kcConfig, name string) error {
 	return nil
 }
 
-
 func main() {
 	var KcConfig *kcConfig
 	KcConfig.url = GetEnvironmentVar("KC_URL", "keycloak.example.com")
 	KcConfig.realm = GetEnvironmentVar("KC_REALM", "REV")
 	KcConfig.username = GetEnvironmentVar("KC_ADMIN_USER", "admin")
 	KcConfig.password = GetEnvironmentVar("KC_ADMIN_PASS", "admin")
+
 	var wg sync.WaitGroup
 	go watchSecrets(KcConfig)
 	wg.Add(1)
